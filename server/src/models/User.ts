@@ -13,6 +13,7 @@ export interface IUser {
   year?: number;
   skills: string[];
   isEmailVerified: boolean;
+  refreshTokenHash?: string;
 }
 
 const userSchema = new Schema<IUser>(
@@ -25,6 +26,8 @@ const userSchema = new Schema<IUser>(
     year: { type: Number, min: 1, max: 5 },
     skills: { type: [String], default: [] },
     isEmailVerified: { type: Boolean, default: false },
+    // Hash of the user's current refresh token (never the token itself)
+    refreshTokenHash: { type: String, select: false },
   },
   { timestamps: true }
 );
@@ -34,9 +37,5 @@ userSchema.pre('save', async function () {
   if (!this.isModified('password')) return;
   this.password = await bcrypt.hash(this.password, 12);
 });
-
-userSchema.methods.comparePassword = function (candidate: string) {
-  return bcrypt.compare(candidate, this.password);
-};
 
 export const User = model<IUser>('User', userSchema);
