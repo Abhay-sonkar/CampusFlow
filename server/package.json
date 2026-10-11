@@ -6,5 +6,11 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "multer": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/multer": "^2.3.0"
   }
 }
