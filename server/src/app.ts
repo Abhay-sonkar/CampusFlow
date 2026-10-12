@@ -6,9 +6,11 @@ import path from 'path';
 import { env } from './config/env';
 import { errorHandler, notFound } from './middleware/errorHandler';
 import authRoutes from './routes/auth.routes';
+import bookingRoutes from './routes/booking.routes';
 import complaintRoutes from './routes/complaint.routes';
 import departmentRoutes from './routes/department.routes';
 import noticeRoutes from './routes/notice.routes';
+import resourceRoutes from './routes/resource.routes';
 
 export const app = express();
 
@@ -27,6 +29,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/notices', noticeRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/complaints', complaintRoutes);
+app.use('/api/resources', resourceRoutes);
+app.use('/api/bookings', bookingRoutes);
 
 app.use(notFound);
 app.use(errorHandler);
