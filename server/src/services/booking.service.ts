@@ -1,4 +1,5 @@
 import { isValidObjectId } from 'mongoose';
+import { enqueueJob } from '../jobs/enqueue';
 import { Booking } from '../models/Booking';
 import { Resource } from '../models/Resource';
 import { Role } from '../models/User';
@@ -103,9 +104,10 @@ export async function approveBooking(actor: Actor, id: string) {
   const updated = await Booking.findOneAndUpdate(
     { _id: id, status: 'PENDING' },
     { $set: { status: 'APPROVED', decidedBy: actor.id, decidedAt: new Date() } },
-    { new: true }
+    { returnDocument: 'after' }
   );
   if (!updated) throw new ApiError(409, 'Only a pending booking can be approved');
+  void enqueueJob('booking.decided', { bookingId: id }); // tell the person who asked, in the background
   return getBooking(actor, id);
 }
 
@@ -115,12 +117,13 @@ export async function rejectBooking(actor: Actor, id: string, note: string) {
   const updated = await Booking.findOneAndUpdate(
     { _id: id, status: 'PENDING' },
     { $set: { status: 'REJECTED', holdsSlot: false, decisionNote: note, decidedBy: actor.id, decidedAt: new Date() } },
-    { new: true }
+    { returnDocument: 'after' }
   );
   if (!updated) {
     if (!(await Booking.exists({ _id: id }))) throw notFound();
     throw new ApiError(409, 'Only a pending booking can be rejected');
   }
+  void enqueueJob('booking.decided', { bookingId: id });
   return getBooking(actor, id);
 }
 
@@ -133,7 +136,7 @@ export async function cancelBooking(actor: Actor, id: string) {
   const updated = await Booking.findOneAndUpdate(
     { _id: id, status: { $in: ['PENDING', 'APPROVED'] } },
     { $set: { status: 'CANCELLED', holdsSlot: false, cancelledAt: new Date() } },
-    { new: true }
+    { returnDocument: 'after' }
   );
   if (!updated) throw new ApiError(409, 'This booking can no longer be cancelled');
   return getBooking(actor, id);

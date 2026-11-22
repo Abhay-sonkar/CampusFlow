@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { isValidObjectId } from 'mongoose';
 import path from 'path';
+import { enqueueJob } from '../jobs/enqueue';
 import { Complaint, ComplaintStatus } from '../models/Complaint';
 import { Department } from '../models/Department';
 import { Role, User } from '../models/User';
@@ -96,6 +97,7 @@ export async function createComplaint(actor: Actor, input: CreateComplaintInput)
  * 3. Apply it with a *conditional* update: "only if status is still `from`".
  *    If two people act at the same moment, only one wins; the other gets a 409
  *    instead of silently overwriting the first change.
+ * 4. Tell the people involved, in the background (the worker does the slow part).
  */
 async function moveTo(
   actor: Actor,
@@ -122,8 +124,10 @@ async function moveTo(
   if (to === 'CLOSED') update.$set.closedAt = now;
   if (from === 'RESOLVED' && to === 'IN_PROGRESS') update.$unset = { resolvedAt: 1 }; // reopened
 
-  const updated = await Complaint.findOneAndUpdate({ _id: complaint._id, status: from }, update, { new: true });
+  const updated = await Complaint.findOneAndUpdate({ _id: complaint._id, status: from }, update, { returnDocument: 'after' });
   if (!updated) throw new ApiError(409, 'This complaint was just updated by someone else. Reload and try again.');
+
+  void enqueueJob('complaint.updated', { complaintId: String(complaint._id), actorId: actor.id, status: to });
 }
 
 export async function assignComplaint(actor: Actor, id: string, assigneeId: string, note?: string) {

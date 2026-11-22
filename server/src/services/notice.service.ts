@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { isValidObjectId } from 'mongoose';
 import path from 'path';
+import { enqueueJob } from '../jobs/enqueue';
 import { Notice } from '../models/Notice';
 import { Role, User } from '../models/User';
 import { ApiError } from '../utils/ApiError';
@@ -141,6 +142,8 @@ export async function setPublished(actor: Actor, id: string, published: boolean)
   if (published && !notice.publishedAt) notice.publishedAt = new Date();
   await notice.save();
   await invalidate('notices');
+  // Tell the audience, in the background (the worker does the slow part)
+  if (published) void enqueueJob('notice.published', { noticeId: id });
   return notice;
 }
 

@@ -1,4 +1,5 @@
 import { isValidObjectId } from 'mongoose';
+import { enqueueJob } from '../jobs/enqueue';
 import { Application } from '../models/Application';
 import { Bookmark } from '../models/Bookmark';
 import { Opportunity } from '../models/Opportunity';
@@ -132,6 +133,8 @@ export async function createOpportunity(actor: Actor, input: CreateOpportunityIn
   if (input.deadline.getTime() <= Date.now()) throw new ApiError(400, 'The deadline must be in the future');
   const doc = await Opportunity.create({ ...input, createdBy: actor.id });
   await invalidate('opportunities');
+  // Tell the students it is open to, in the background
+  void enqueueJob('opportunity.created', { opportunityId: doc.id });
   return getOpportunity(actor, doc.id);
 }
 
