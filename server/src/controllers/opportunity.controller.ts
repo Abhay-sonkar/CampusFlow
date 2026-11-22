@@ -9,7 +9,9 @@ const idOf = (req: Request) => String(req.params.id);
 
 export async function browse(req: Request, res: Response) {
   const query = listOpportunitiesQuery.parse(req.query);
-  res.json({ success: true, ...(await opportunities.browse(actor(req), query)) });
+  const { cache, ...body } = await opportunities.browse(actor(req), query);
+  res.set('X-Cache', cache); // HIT = list came from Redis, MISS = read from MongoDB, BYPASS = not cacheable
+  res.json({ success: true, ...body });
 }
 
 export async function recommended(req: Request, res: Response) {

@@ -4,6 +4,7 @@ import { Bookmark } from '../models/Bookmark';
 import { Opportunity } from '../models/Opportunity';
 import { Role, User } from '../models/User';
 import { ApiError } from '../utils/ApiError';
+import { CacheStatus, cached, invalidate } from '../utils/cache';
 import { branchMatch, isEligible, yearMatch } from '../utils/eligibility';
 import { RecProfile, scoreOpportunity } from '../utils/recommend';
 import {
@@ -25,7 +26,11 @@ export async function getProfile(actor: Actor): Promise<RecProfile> {
 
 const canManage = (actor: Actor, createdBy: unknown) => actor.role === 'COLLEGE_ADMIN' || String(createdBy) === actor.id;
 
+// Cached results come back from Redis as plain objects, fresh ones are Mongoose documents
+const toPlain = (d: any) => (typeof d.toObject === 'function' ? d.toObject() : d);
+
 // Adds "what does this mean for me?" to each opportunity: saved? applied? eligible?
+// This part is personal, so it is never cached: only the shared list is.
 async function annotate(actor: Actor, profile: RecProfile, docs: any[]) {
   if (docs.length === 0) return [];
   const ids = docs.map((d) => d._id);
@@ -36,7 +41,7 @@ async function annotate(actor: Actor, profile: RecProfile, docs: any[]) {
   const saved = new Set(bookmarks.map((b) => String(b.opportunity)));
   const statusById = new Map(applications.map((a) => [String(a.opportunity), a.status]));
   return docs.map((d) => ({
-    ...d.toObject(),
+    ...toPlain(d),
     viewer: {
       bookmarked: saved.has(String(d._id)),
       applicationStatus: statusById.get(String(d._id)) ?? null,
@@ -51,6 +56,13 @@ const SORTS: Record<string, Record<string, 1 | -1>> = {
   popular: { bookmarkCount: -1, applicationCount: -1, deadline: 1 },
 };
 
+/*
+ * Browsing is cached in two layers:
+ *   - the shared part (the list of opportunities + total) is cached in Redis for 60 seconds
+ *   - the personal part (saved? applied? eligible?) is added fresh on every request
+ * So two different students asking the same question share one cached list but still see their own flags.
+ * Text searches and "my postings" are not cached (too many different questions, or personal).
+ */
 export async function browse(actor: Actor, query: ListOpportunitiesQuery) {
   await Opportunity.init(); // make sure the text index exists before a $text search
   const profile = await getProfile(actor);
@@ -76,17 +88,32 @@ export async function browse(actor: Actor, query: ListOpportunitiesQuery) {
   if (query.year) and.push(yearMatch(query.year));
   if (and.length > 0) filter.$and = and;
 
-  const [docs, total] = await Promise.all([
-    Opportunity.find(filter)
-      .sort(SORTS[query.sort])
-      .skip((query.page - 1) * query.limit)
-      .limit(query.limit)
-      .populate('createdBy', 'name role'),
-    Opportunity.countDocuments(filter),
-  ]);
+  const load = async () => {
+    const [docs, total] = await Promise.all([
+      Opportunity.find(filter)
+        .sort(SORTS[query.sort])
+        .skip((query.page - 1) * query.limit)
+        .limit(query.limit)
+        .populate('createdBy', 'name role'),
+      Opportunity.countDocuments(filter),
+    ]);
+    return { docs, total };
+  };
+
+  let result: Awaited<ReturnType<typeof load>>;
+  let status: CacheStatus = 'BYPASS';
+  if (!query.q && !query.mine) {
+    // "eligibleForMe" depends on who is asking, so that person's branch/year is part of the key
+    const me = query.eligibleForMe ? { branch: profile.branch ?? null, year: profile.year ?? null } : null;
+    ({ data: result, status } = await cached('opportunities', { query, me }, 60, load));
+  } else {
+    result = await load();
+  }
+
   return {
-    items: await annotate(actor, profile, docs),
-    pagination: { page: query.page, limit: query.limit, total, pages: Math.ceil(total / query.limit) },
+    items: await annotate(actor, profile, result.docs),
+    pagination: { page: query.page, limit: query.limit, total: result.total, pages: Math.ceil(result.total / query.limit) },
+    cache: status,
   };
 }
 
@@ -104,6 +131,7 @@ export async function getOpportunity(actor: Actor, id: string) {
 export async function createOpportunity(actor: Actor, input: CreateOpportunityInput) {
   if (input.deadline.getTime() <= Date.now()) throw new ApiError(400, 'The deadline must be in the future');
   const doc = await Opportunity.create({ ...input, createdBy: actor.id });
+  await invalidate('opportunities');
   return getOpportunity(actor, doc.id);
 }
 
@@ -129,6 +157,7 @@ export async function updateOpportunity(actor: Actor, id: string, input: UpdateO
     }
   }
   await Opportunity.updateOne({ _id: doc._id }, { $set: set }, { runValidators: true });
+  await invalidate('opportunities');
   return getOpportunity(actor, id);
 }
 
@@ -137,6 +166,7 @@ export async function deleteOpportunity(actor: Actor, id: string) {
   // Remove everything that points at it, so nothing is left dangling
   await Promise.all([Bookmark.deleteMany({ opportunity: doc._id }), Application.deleteMany({ opportunity: doc._id })]);
   await doc.deleteOne();
+  await invalidate('opportunities');
 }
 
 /*

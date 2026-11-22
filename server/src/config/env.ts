@@ -8,6 +8,8 @@ const schema = z.object({
   JWT_ACCESS_SECRET: z.string().min(16),
   JWT_REFRESH_SECRET: z.string().min(16),
   CLIENT_URL: z.string().default('http://localhost:5173'),
+  // Optional: with no Redis the app still works, just without caching and rate limiting
+  REDIS_URL: z.string().optional(),
 });
 
 // Crashes on startup with a clear error if any env var is missing/invalid

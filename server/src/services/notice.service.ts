@@ -4,6 +4,7 @@ import path from 'path';
 import { Notice } from '../models/Notice';
 import { Role, User } from '../models/User';
 import { ApiError } from '../utils/ApiError';
+import { cached, invalidate } from '../utils/cache';
 import { CreateNoticeInput, ListNoticesQuery, UpdateNoticeInput } from '../validators/notice.schema';
 
 export type Actor = { id: string; role: Role };
@@ -57,7 +58,13 @@ async function paginate(filter: Record<string, any>, sort: Record<string, 1 | -1
   return { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } };
 }
 
-// Personalised feed: published + targeted at me. Pinned first, then newest.
+/*
+ * Personalised feed: published + targeted at me. Pinned first, then newest.
+ * This is the most-read page in the app, so it is cached.
+ *
+ * The cache key is the viewer's AUDIENCE (role + branch + year), not their user id:
+ * every CSE year-3 student sees exactly the same feed, so they all share one cached copy.
+ */
 export async function listFeed(actor: Actor, query: ListNoticesQuery) {
   const viewer = await getViewer(actor);
   const filter: Record<string, any> = { status: 'PUBLISHED', ...audienceFilter(viewer) };
@@ -65,7 +72,12 @@ export async function listFeed(actor: Actor, query: ListNoticesQuery) {
   if (query.category) filter.category = query.category;
   if (query.pinned) filter.isPinned = query.pinned === 'true';
   if (query.upcoming) filter.deadline = { $gte: new Date() };
-  return paginate(filter, { isPinned: -1, publishedAt: -1 }, query.page, query.limit);
+
+  const audience = { role: viewer.role, branch: viewer.branch?.toUpperCase() ?? null, year: viewer.year ?? null };
+  const { data, status } = await cached('notices', { audience, query }, 60, () =>
+    paginate(filter, { isPinned: -1, publishedAt: -1 }, query.page, query.limit)
+  );
+  return { ...data, cache: status };
 }
 
 // Author view: my notices (any status). COLLEGE_ADMIN sees everyone's.
@@ -100,7 +112,9 @@ export async function createNotice(actor: Actor, input: CreateNoticeInput) {
     throw new ApiError(403, 'Only a COLLEGE_ADMIN can pin notices');
   }
   // Always starts as a DRAFT; publishing is a separate, deliberate step
-  return Notice.create({ ...input, createdBy: actor.id });
+  const notice = await Notice.create({ ...input, createdBy: actor.id });
+  await invalidate('notices');
+  return notice;
 }
 
 export async function updateNotice(actor: Actor, id: string, input: UpdateNoticeInput) {
@@ -116,7 +130,9 @@ export async function updateNotice(actor: Actor, id: string, input: UpdateNotice
       if (value !== undefined) set[`audience.${key}`] = value;
     }
   }
-  return Notice.findByIdAndUpdate(notice._id, { $set: set }, { new: true, runValidators: true });
+  const updated = await Notice.findByIdAndUpdate(notice._id, { $set: set }, { returnDocument: 'after', runValidators: true });
+  await invalidate('notices');
+  return updated;
 }
 
 export async function setPublished(actor: Actor, id: string, published: boolean) {
@@ -124,6 +140,7 @@ export async function setPublished(actor: Actor, id: string, published: boolean)
   notice.status = published ? 'PUBLISHED' : 'DRAFT';
   if (published && !notice.publishedAt) notice.publishedAt = new Date();
   await notice.save();
+  await invalidate('notices');
   return notice;
 }
 
@@ -140,6 +157,7 @@ export async function deleteNotice(actor: Actor, id: string) {
   const notice = await loadManageable(actor, id);
   await removeFile(notice.attachmentUrl);
   await notice.deleteOne();
+  await invalidate('notices');
 }
 
 export async function setAttachment(actor: Actor, id: string, file: { filename: string; originalname: string }) {
@@ -148,6 +166,7 @@ export async function setAttachment(actor: Actor, id: string, file: { filename: 
   notice.attachmentUrl = `/uploads/notices/${file.filename}`;
   notice.attachmentName = file.originalname;
   await notice.save();
+  await invalidate('notices');
   return notice;
 }
 

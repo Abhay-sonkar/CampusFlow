@@ -8,7 +8,9 @@ const idOf = (req: Request) => String(req.params.id);
 
 export async function listFeed(req: Request, res: Response) {
   const query = listNoticesQuery.parse(req.query);
-  res.json({ success: true, ...(await noticeService.listFeed(actor(req), query)) });
+  const { cache, ...body } = await noticeService.listFeed(actor(req), query);
+  res.set('X-Cache', cache); // HIT = served from Redis, MISS = read from MongoDB, BYPASS = Redis not in use
+  res.json({ success: true, ...body });
 }
 
 export async function listManaged(req: Request, res: Response) {

@@ -8,6 +8,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "ioredis": "^6.0.0",
     "multer": "^2.4.0"
   },
   "devDependencies": {
