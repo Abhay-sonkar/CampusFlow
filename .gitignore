@@ -4,3 +4,4 @@ dist
 .DS_Store
 cookies.txt
 uploads
+coverage
