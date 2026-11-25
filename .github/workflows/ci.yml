@@ -1,0 +1,81 @@
+name: CI
+
+# When this runs: on every push to main, and on every pull request
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# If you push twice quickly, cancel the older run
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- 1. Type-check, build and test the server ----------
+  server:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    # GitHub starts a real MongoDB next to the job. The tests use it through TEST_MONGO_URI
+    # (so nothing has to be downloaded), and each test file creates and deletes its own database.
+    services:
+      mongo:
+        image: mongo:8
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_MONGO_URI: mongodb://localhost:27017
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # "ci" installs exactly what package-lock.json says (and fails if it is out of date)
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check and compile
+        run: npm run build
+
+      - name: Run the tests
+        run: npm test
+
+  # ---------- 2. Check that the Docker image still builds ----------
+  docker:
+    runs-on: ubuntu-latest
+    needs: server
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the server image
+        run: docker build -t campusflow-server ./server
+
+  # ---------- 3. Deploy (only from main, and only after everything above is green) ----------
+  # It does nothing until you add a secret called RENDER_DEPLOY_HOOK_URL
+  # (Repository > Settings > Secrets and variables > Actions). See the Phase 11 deploy steps.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [server, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+    steps:
+      - name: Trigger the deploy
+        if: env.DEPLOY_HOOK != ''
+        run: curl -fsS -X POST "$DEPLOY_HOOK"
+      - name: Nothing to deploy yet
+        if: env.DEPLOY_HOOK == ''
+        run: echo "No RENDER_DEPLOY_HOOK_URL secret is set, so the deploy step is skipped."

@@ -1,0 +1,19 @@
+# Things that must never be copied into the image
+node_modules
+dist
+coverage
+uploads
+.env
+.env.*
+.git
+.gitignore
+
+# Not needed to run the app
+tests
+manual-tests
+jest.config.js
+tsconfig.test.json
+TESTING.md
+*.md
+Dockerfile
+.dockerignore

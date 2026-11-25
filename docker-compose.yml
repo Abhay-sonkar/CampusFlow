@@ -1,0 +1,78 @@
+# Starts the whole backend with one command:
+#     docker compose up --build -d
+# Stop it:                docker compose down
+# Stop it AND erase data: docker compose down -v
+
+# Settings shared by the API and the worker (defined once, used twice)
+x-app-env: &app-env
+  NODE_ENV: development # use "production" when deploying behind HTTPS
+  PORT: "5000"
+  MONGO_URI: mongodb://mongo:27017/campusflow # "mongo" is the name of the service below
+  REDIS_URL: redis://redis:6379
+  JWT_ACCESS_SECRET: "${JWT_ACCESS_SECRET:?Copy .env.docker.example to .env and fill in the two JWT secrets}"
+  JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:?Copy .env.docker.example to .env and fill in the two JWT secrets}"
+  CLIENT_URL: "${CLIENT_URL:-http://localhost:5173}"
+  SMTP_HOST: "${SMTP_HOST:-}"
+  SMTP_PORT: "${SMTP_PORT:-}"
+  SMTP_USER: "${SMTP_USER:-}"
+  SMTP_PASS: "${SMTP_PASS:-}"
+
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # noeviction: Redis never deletes data when full (the queue must not lose jobs)
+    # appendonly: Redis saves to disk, so queued jobs survive a restart
+    command: ["redis-server", "--maxmemory-policy", "noeviction", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./server
+    image: campusflow-server:local
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      <<: *app-env
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    image: campusflow-server:local # the same image as the API, started differently
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    environment:
+      <<: *app-env
+    healthcheck:
+      disable: true # the image's health check calls the web server, which the worker does not have
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
+  redis-data:
+  uploads:
