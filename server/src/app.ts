@@ -3,10 +3,14 @@ import cors from 'cors';
 import express from 'express';
 import helmet from 'helmet';
 import path from 'path';
+import swaggerUi from 'swagger-ui-express';
 import { env } from './config/env';
 import { redis } from './config/redis';
+import { openapiDocument } from './docs/openapi';
 import { errorHandler, notFound } from './middleware/errorHandler';
 import { rateLimit } from './middleware/rateLimit';
+import { requestLogger } from './middleware/requestLogger';
+import { sanitizeInput } from './middleware/sanitize';
 import adminRoutes from './routes/admin.routes';
 import applicationRoutes from './routes/application.routes';
 import authRoutes from './routes/auth.routes';
@@ -21,24 +25,22 @@ import userRoutes from './routes/user.routes';
 
 export const app = express();
 
-// Behind a hosting proxy (Render, Railway...) req.ip would be the proxy's address; this reads the real client
 if (env.NODE_ENV === 'production') app.set('trust proxy', 1);
 
-// 'cross-origin' lets the React app (another origin) display uploaded files
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: env.CLIENT_URL, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' })); // a sane cap: nobody needs a 50 MB JSON body here
 app.use(cookieParser());
+app.use(sanitizeInput);
+app.use(requestLogger);
 
-// Not rate limited, so monitoring tools can always reach it
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, status: 'ok', redis: redis ? redis.status : 'disabled' });
 });
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(openapiDocument));
 
-// Strict limits where guessing passwords or mass-creating accounts is the risk...
 app.use('/api/auth/login', rateLimit({ name: 'login', limit: 10, windowSeconds: 60 }));
 app.use('/api/auth/register', rateLimit({ name: 'register', limit: 10, windowSeconds: 60 }));
-// ...and a generous limit for everything else
 app.use('/api', rateLimit({ name: 'global', limit: 300, windowSeconds: 60 }));
 
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
